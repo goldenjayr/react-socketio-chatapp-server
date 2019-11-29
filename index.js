@@ -1,7 +1,34 @@
 const app = require('express')()
 const server = require('http').Server(app)
+const router = require('./router')
 const io = require('socket.io')(server)
-
 const PORT = process.env.PORT || 4000
+const { addUser, removeUser, getUser, getUsersInRoom } = require('./users')
+
+
+io.on('connection', (socket) => {
+    socket.on('user-join', ({ name, room}, callback) => {
+        const { error, user } = addUser({id: socket.id, name, room})
+        if (error) return callback(error)
+
+        socket.emit('admin-message', {user: 'admin', text: `${user.name}, Welcome to the room ${user.room}.`})
+        socket.broadcast.to(user.room).emit('admin-message', {user: 'admin', text: `${user.name} has joined.`})
+        socket.join(user.room)
+    })
+
+    socket.on('send-message', (message, callback) => {
+        const user = getUser(socket.id)
+
+        io.to(user.room).emit('admin-message', {user: user.name, text: message})
+        callback()
+    })
+
+
+    socket.on('disconnect', () => {
+        console.log('User has disconnected')
+    })
+} )
+
+app.use(router)
 
 server.listen(PORT, () => console.log(`Server listening on port ${PORT}`))
