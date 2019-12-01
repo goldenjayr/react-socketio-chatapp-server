@@ -12,6 +12,7 @@ const addUser = ({id, name, room}) => {
 
     const user = { id, name, room}
     users.push(user)
+    console.log(users)
 
     return { user }
 }
@@ -19,7 +20,11 @@ const addUser = ({id, name, room}) => {
 const removeUser = id => {
     const user = users.find(user => user.id === id)
     const remainingUsers = users.filter(user => user.id !== id)
+    console.log("TCL: remainingUsers", remainingUsers)
+    console.log(users)
     users = [...remainingUsers]
+    console.log("TCL: users", users)
+
     return user
 }
 

@@ -7,6 +7,7 @@ const { addUser, removeUser, getUser, getUsersInRoom } = require('./users')
 
 
 io.on('connection', (socket) => {
+    console.log('new Connection')
     socket.on('user-join', ({ name, room}, callback) => {
         const { error, user } = addUser({id: socket.id, name, room})
         if (error) return callback(error)
@@ -14,18 +15,27 @@ io.on('connection', (socket) => {
         socket.emit('admin-message', {user: 'admin', text: `${user.name}, Welcome to the room ${user.room}.`})
         socket.broadcast.to(user.room).emit('admin-message', {user: 'admin', text: `${user.name} has joined.`})
         socket.join(user.room)
+        io.to(user.room).emit('room-data', {room: user.room, users: getUsersInRoom(user.room)})
+
     })
 
     socket.on('send-message', (message, callback) => {
         const user = getUser(socket.id)
 
         io.to(user.room).emit('admin-message', {user: user.name, text: message})
+        io.to(user.room).emit('room-data', {room: user.room, users: getUsersInRoom(user.room)})
+
         callback()
     })
 
 
     socket.on('disconnect', () => {
-        console.log('User has disconnected')
+        console.log('Disconnection')
+        // const user = removeUser(socket.id)
+
+        // if (user) {
+            // io.to(user.room).emit('admin-message', {user: 'admin', text: `${user.name} has left.`})
+        // }
     })
 } )
 
