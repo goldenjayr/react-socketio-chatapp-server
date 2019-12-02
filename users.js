@@ -1,4 +1,5 @@
 let users = []
+let chatHistory = []
 
 const addUser = ({id, name, room}) => {
     name = name.trim().toLowerCase()
@@ -10,7 +11,7 @@ const addUser = ({id, name, room}) => {
     //     return { error: 'Username already exists'}
     // }
 
-    // delete user if it exists
+   // delete user if it exists
     if (existingUser) {
         console.log("TCL: addUser -> existingUser", existingUser)
         removeUser(existingUser.id)
@@ -38,9 +39,20 @@ const getUser = id => users.find(user => user.id === id)
 
 const getUsersInRoom = room => users.filter(user => user.room === room)
 
+const addToChatHistory = ({message, user}) => {
+    chatHistory.push({user, message})
+    console.log(chatHistory)
+}
+
+const getChatHistory = () => {
+    return chatHistory
+}
+
 module.exports = {
     addUser,
     removeUser,
     getUser,
-    getUsersInRoom
+    getUsersInRoom,
+    addToChatHistory,
+    getChatHistory
 }
