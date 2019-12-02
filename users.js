@@ -1,4 +1,4 @@
-const users = []
+let users = []
 
 const addUser = ({id, name, room}) => {
     name = name.trim().toLowerCase()
@@ -6,8 +6,14 @@ const addUser = ({id, name, room}) => {
 
     const existingUser = users.find(user => user.room === room && user.name === name)
 
+    // if (existingUser) {
+    //     return { error: 'Username already exists'}
+    // }
+
+    // delete user if it exists
     if (existingUser) {
-        return { error: 'Username already exists'}
+        console.log("TCL: addUser -> existingUser", existingUser)
+        removeUser(existingUser.id)
     }
 
     const user = { id, name, room}
