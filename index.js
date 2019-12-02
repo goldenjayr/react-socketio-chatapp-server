@@ -1,9 +1,12 @@
 const app = require('express')()
+const path = require('path')
+const fs = require('fs')
 const server = require('http').Server(app)
 const router = require('./router')
 const io = require('socket.io')(server)
 const PORT = process.env.PORT || 4000
 const { addUser, removeUser, getUser, getUsersInRoom, addToChatHistory, getChatHistory } = require('./users')
+const ss = require('socket.io-stream')
 
 
 io.on('connection', (socket) => {
@@ -27,9 +30,16 @@ io.on('connection', (socket) => {
         }
     })
 
-    socket.on('send-message', (message, callback) => {
-     console.log("TCL: message", message)
+    ss(socket).on('send-message', (stream, message, callback) => {
+        console.log("TCL: stream", stream)
+        console.log("TCL: message", message)
         const user = getUser(socket.id)
+        console.log( typeof message )
+        if (typeof message === 'object') {
+            const filename = path.join(__dirname, 'uploads/' + message.image)
+            stream.pipe(fs.createWriteStream(filename))
+        }
+
         addToChatHistory({
             message,
             user
