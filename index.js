@@ -7,7 +7,12 @@ const io = require('socket.io')(server)
 const PORT = process.env.PORT || 4000
 const { addUser, removeUser, getUser, getUsersInRoom, addToChatHistory, getChatHistory } = require('./users')
 const ss = require('socket.io-stream')
+const ouboundStream = ss.createStream()
 
+const uploads = io.of('/uploads')
+uploads.on('connection', (socket) => {
+    console.log(socket)
+})
 
 io.on('connection', (socket) => {
     console.log('new Connection')
@@ -31,13 +36,19 @@ io.on('connection', (socket) => {
     })
 
     ss(socket).on('send-message', (stream, message, callback) => {
-        console.log("TCL: stream", stream)
-        console.log("TCL: message", message)
+    console.log("TCL: message", message)
         const user = getUser(socket.id)
-        console.log( typeof message )
         if (typeof message === 'object') {
             const filename = path.join(__dirname, 'uploads/' + message.image)
-            stream.pipe(fs.createWriteStream(filename))
+            const writeStream = fs.createWriteStream(filename)
+            stream.pipe(writeStream)
+            console.log("TCL: message", message)
+
+            ss(io).emit('admin-message-image', ouboundStream, {user: user.name, text: message})
+            writeStream.on('')
+            fs.createReadStream(filename).pipe(ouboundStream)
+        } else {
+            io.emit('admin-message', {user: user.name, text: message})
         }
 
         addToChatHistory({
@@ -45,7 +56,6 @@ io.on('connection', (socket) => {
             user
         })
 
-        io.to(user.room).emit('admin-message', {user: user.name, text: message})
         io.to(user.room).emit('room-data', {room: user.room, users: getUsersInRoom(user.room)})
 
         callback()
