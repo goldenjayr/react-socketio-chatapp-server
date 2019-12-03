@@ -8,7 +8,7 @@ const { addUser, removeUser, getUser, getUsersInRoom, addToChatHistory, getChatH
 
 io.on('connection', (socket) => {
     console.log('new Connection')
-    socket.on('user-join', ({ name, room}, callback) => {
+    socket.on('user-join', ({ name, room }, callback) => {
         const { error, user } = addUser({id: socket.id, name, room})
         if (error) return callback(error)
 
