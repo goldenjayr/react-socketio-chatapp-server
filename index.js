@@ -1,155 +1,229 @@
 const app = require('express')()
-const path = require('path')
-const fs = require('fs')
 const server = require('http').Server(app)
+
+global.path = require('path')
+global.fs = require('fs')
+global.io = require('socket.io')(server)
+global.ss = require('socket.io-stream')
+global.kafka = require('kafka-node')
+
+global.Transform = require('stream').Transform
+global.Duplex = require('stream').Duplex
+
+const uuiv4 = require('uuid/v4')
 const router = require('./router')
-const io = require('socket.io')(server)
+
+const { kafka_server, kafka_topic } = require('./kafka_config')
+
 const PORT = process.env.PORT || 4000
+
 const { addUser, removeUser, getUser, getUsersInRoom, addToChatHistory, getChatHistory } = require('./users')
-const ss = require('socket.io-stream')
+const { downloadUploadData, createProducerStream } = require('./utils')
+const { kafkaProducerTexts } = require('./kafkaProducer')
+const { kafkaConsumerGroupTexts, kafkaConsumerTexts } = require('./kafkaConsumer')
+
+global.uploadDirectory = path.resolve(__dirname, 'uploads')
 
 
 
 
-const uploadData = (socket, file_name) => {
-    const uploadDirectory = path.resolve(__dirname, 'uploads')
-    if (!file_name) {
-        fs.readdir(uploadDirectory, (err, files) => {
-            if (err) {
-                return console.log('Unable to scan directory: ' + err);
-            }
-            files.forEach(file => {
-                    const filePath = path.resolve(uploadDirectory, file)
-                    const stream = ss.createStream()
-                    ss(socket).emit('upload-data', stream)
-                    fs.createReadStream(filePath).pipe(stream)
-            })
-        })
-
-    } else {
-        console.log(`Downloading SSession ${socket.id} - Preparing Download of ${file_name}`)
-
-        let filesArr
-        fs.readdir(uploadDirectory, (err, files) => {
-            if (err) {
-                return console.log('Unable to scan directory: ' + err)
-            }
-
-            filesArr = files.filter(file => {
-                return file.toLowerCase().includes(file_name)
-            })
-            console.log("TCL: uploadData -> filesArr", filesArr)
-
-            if (filesArr.length > 0) {
-                filesArr.forEach(file => {
-                        const filePath = path.resolve(uploadDirectory, file)
-                        const stream = ss.createStream()
-                        ss(socket).emit('upload-data', stream)
-                        fs.createReadStream(filePath).pipe(stream)
-                })
-            } else {
-                socket.emit('download error' , {code: 500, message: `${file_name} does not exists`})
-            }
-        })
-
-
-        // const filePath = path.resolve(__dirname, `uploads/${file_name}`)
-        // console.log("TCL: filePath", filePath)
-        // const exists = fs.existsSync(filePath)
-        // if (!exists) {
-        // } else {
-        //     socket.on('ready', () => {
-        //         const stream = ss.createStream()
-        //         ss(socket).emit('upload-data', stream)
-        //         console.log('sending...')
-        //         fs.createReadStream(filePath).pipe(stream)
-        //     })
-
-        //     socket.on('done', () => {
-        //         console.log(`Download Session ${socket.id} - Download Done of ${file_name}`)
-        //         socket.emit('close')
-        //     })
-        // }
-    }
-}
-
-
-
+// uploads namespace for retrieving uploads
 const uploads = io.of('/uploads')
 uploads.on('connect', (socket) => {
-    socket.emit('connected-uploads', 'connected')
+    socket.emit('connected-uploads', `You are connected to uploads socket namespace`)
     let { file_name, force } = socket.handshake.query
+    console.log("TCL: file_name", file_name)
+
+
+    // kafka integration
+    // const topic = `${file_name}_${uuiv4()}`
+    const topic = 'pictures'
+    const filePath = path.resolve(uploadDirectory, file_name)
+    const stat = fs.statSync( filePath )
+    try {
+        console.log('Stream request received')
+        const kafka_client_options = {
+            kafkaHost: kafka_server
+        }
+
+        // kafka Stream
+
+        const kafka_client = new kafka.KafkaClient( kafka_client_options )
+
+        kafka_client.createTopics([{
+            topic,
+            partitions: 3,
+            replicationFactor: 2
+        }], ( err ) => {
+            if ( err ) {
+                throw err
+            } else {
+                console.log (`Created ${topic}`)
+                const readableStream = fs.createReadStream(filePath)
+                const producerStream = createProducerStream(kafka_client_options, topic)
+
+                readableStream.pipe( producerStream )
+
+                let transferred = 0
+                readableStream.on('data', (data) => {
+                    transferred = transferred + data.length
+                    console.log(`Sent ${file_name}  ( ${Math.floor(( transferred /stat.size ) * 100  ) }% ) [ ${transferred} / ${stat.size } ]`)
+                })
+
+                socket.emit('kafa-response', {topic, stat})
+            }
+        })
+
+    } catch (err) {
+        console.error(err)
+    }
+
+
     socket.on('ready', () => {
-        uploadData(socket, file_name)
+        //download upload data
+        downloadUploadData(socket, file_name)
     })
 
+
     // socket.on('get-uploads', (file_name) => {
-    // console.log("TCL: file_name", file_name)
-    //     uploadData(socket, file_name)
+    //     downloadUploadData(socket, file_name)
     // })
 
 })
 
-io.on('connect', (socket) => {
-    console.log('new Connection')
-    socket.on('user-join', ({ name, room }, callback) => {
+
+global.texts_namespace = io.of('/texts')
+texts_namespace.on('connect', socket => {
+    socket.emit('connected-texts', `You are connected to text socket namespace`)
+
+    socket.on('user-join', ({name, room}) => {
         const { error, user } = addUser({id: socket.id, name, room})
         if (error) return callback(error)
 
-        const chatHistory = getChatHistory()
 
-
-        socket.emit('admin-message', {user: 'admin', text: `${user.name}, Welcome to the room ${user.room}.`})
-        socket.broadcast.to(user.room).emit('admin-message', {user: 'admin', text: `${user.name} has joined.`})
+        socket.emit('admin-message', {user: {name: 'admin'}, text: `${user.name}, Welcome to the room ${user.room}.`})
+        kafkaConsumerTexts(kafka_server, socket, room)
+        socket.broadcast.to(user.room).emit('admin-message', {user: {name: 'admin'}, text: `${user.name} has joined.`})
         socket.join(user.room)
-        io.to(user.room).emit('room-data', {room: user.room, users: getUsersInRoom(user.room)})
-        // if(chatHistory.length > 0) {
-        //     chatHistory.forEach(chat => {
-        //         const { user, room, message } = chat
-        //         socket.emit('admin-message', {user: user.name , text: message})
-        //     })
-        // }
+        texts_namespace.to(user.room).emit('room-data', {room: user.room, users: getUsersInRoom(user.room)})
     })
 
-    ss(socket).on('send-message', (stream, message, callback) => {
+
+    socket.on('send-message', (message, callback) => {
         const user = getUser(socket.id)
-        if (typeof message === 'object') {
-            const fileName = message.image
-            const filePath = path.join(__dirname, 'uploads/' + fileName)
-            const writeStream = fs.createWriteStream(filePath)
-            stream.pipe(writeStream)
 
-            stream.on('end', () => {
-                const outboundStream = ss.createStream()
-                ss(socket).emit('admin-message-image', outboundStream, {user: user.name, text: message})
-                fs.createReadStream(filePath).pipe(outboundStream)
+        //kafka integration
+        const topic = 'texts'
+        try {
+            console.log(`Going to Kafka........`)
+            console.log(`Kafka request received for topic -> ${topic}`)
+            const kafka_client_options = {
+                kafkaHost: kafka_server
+            }
 
-                uploads.emit('uploaded');
-            })
-        } else {
-            io.emit('admin-message', {user: user.name, text: message})
+            const kafka_client = new kafka.KafkaClient( kafka_client_options )
+            kafkaConsumerGroupTexts(topic)
+            kafkaProducerTexts(kafka_client, topic, message, user)
+
+            // topicsToCreate = [
+                //     {
+                    //         topic,
+                    //         partitions: 3,
+                    //         key: 'theKey',
+                    //         replicationFactor: 2
+                    //     }
+                    // ]
+
+            // kafka_client.createTopics(topicsToCreate, ( err, result ) => {
+            //     if ( err ) {
+            //         throw err
+            //     } else {
+            //         console.log(`this is the result`)
+            //         console.log (`Created topic ${topic}`)
+            //     }
+            // })
+
+            // kafka_client.loadMetadataForTopics(["texts", "pictures", "ohyeah"], (err, resp) => {
+            //     console.log("TOPIC EXIST: ", JSON.stringify(resp).includes('error'))
+            //   });
+
+
+
+        } catch (err) {
+            throw err
         }
+
+
 
         addToChatHistory({
             message,
             user
         })
 
-        io.to(user.room).emit('room-data', {room: user.room, users: getUsersInRoom(user.room)})
-
         callback()
     })
+})
 
 
-    socket.on('disconnect', () => {
-        console.log('Disconnection')
-        // const user = removeUser(socket.id)
 
-        // if (user) {
-            // io.to(user.room).emit('admin-message', {user: 'admin', text: `${user.name} has left.`})
-        // }
-    })
-} )
+// io.on('connect', (socket) => {
+//     console.log('new Connection')
+//     socket.on('user-join', ({ name, room }, callback) => {
+//         const { error, user } = addUser({id: socket.id, name, room})
+//         if (error) return callback(error)
+
+//         const chatHistory = getChatHistory()
+
+
+//         socket.emit('admin-message', {user: 'admin', text: `${user.name}, Welcome to the room ${user.room}.`})
+//         socket.broadcast.to(user.room).emit('admin-message', {user: 'admin', text: `${user.name} has joined.`})
+//         socket.join(user.room)
+//         io.to(user.room).emit('room-data', {room: user.room, users: getUsersInRoom(user.room)})
+//         // if(chatHistory.length > 0) {
+//         //     chatHistory.forEach(chat => {
+//         //         const { user, room, message } = chat
+//         //         socket.emit('admin-message', {user: user.name , text: message})
+//         //     })
+//         // }
+//     })
+
+//     ss(socket).on('send-message', (stream, message, callback) => {
+//         const user = getUser(socket.id)
+//         if (typeof message === 'object') {
+//             const fileName = message.image
+//             const filePath = path.join(__dirname, 'uploads/' + fileName)
+//             const writeStream = fs.createWriteStream(filePath)
+//             stream.pipe(writeStream)
+
+//             stream.on('end', () => {
+//                 const outboundStream = ss.createStream()
+//                 ss(socket).emit('admin-message-image', outboundStream, {user: user.name, text: message})
+//                 fs.createReadStream(filePath).pipe(outboundStream)
+
+//                 uploads.emit('uploaded');
+//             })
+//         } else {
+//             io.emit('admin-message', {user: user.name, text: message})
+//         }
+
+//         addToChatHistory({
+//             message,
+//             user
+//         })
+
+//         callback()
+//     })
+
+
+//     socket.on('disconnect', () => {
+//         console.log('Disconnection')
+//         // const user = removeUser(socket.id)
+
+//         // if (user) {
+//             // io.to(user.room).emit('admin-message', {user: 'admin', text: `${user.name} has left.`})
+//         // }
+//     })
+// } )
 
 app.use(router)
 
