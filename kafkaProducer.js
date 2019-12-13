@@ -35,7 +35,7 @@ const kafkaFilesProducer = (kafka_client, topic, stream, {file}) => {
         transform (chunk, encoding, callback) {
           order = order + 1
           callback(null, {
-            key: `${order}.${file.name}.${file.size}`,
+            key: JSON.stringify({order: order, fileName: file.name, fileSize: file.size}),
             topic: 'images',
             messages: chunk
           });
@@ -44,13 +44,13 @@ const kafkaFilesProducer = (kafka_client, topic, stream, {file}) => {
 
 
     stream.pipe(streamToTopic).on('data', (chunk) => {
-    console.log("TCL: kafkaFilesProducer -> chunk", chunk)
         streamArray.unshift(chunk)
     })
 
     stream.on('end', () => {
-        streamArray[0].key = streamArray[0].key + '.last'
-        console.log("TCL: kafkaFilesProducer -> streamArray[0].key ", streamArray[0].key )
+        const key = JSON.parse(streamArray[0].key)
+        key.last = true
+        streamArray[0].key = JSON.stringify(key)
         // created new transform because producerStream cannot push from array
         const newTransformStream = new Transform({
             objectMode: true,

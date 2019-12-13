@@ -22,7 +22,7 @@ const { downloadUploadData, createProducerStream } = require('./utils')
 const { kafkaProducerTexts, kafkaFilesProducer } = require('./kafkaProducer')
 const { kafkaConsumerGroupTexts, kafkaConsumerTexts, kafkaFileConsumer } = require('./kafkaConsumer')
 
-global.uploadDirectory = path.resolve(__dirname, 'uploads')
+global.uploadDirectory = path.resolve(process.cwd(), '../file-repository')
 
 
 const kafka_client_options = {
@@ -34,7 +34,7 @@ const kafka_client = new kafka.KafkaClient( kafka_client_options )
 var topicsToCreate = [{
     topic: 'images',
     partitions: 3,
-    replicationFactor: 2
+    replicationFactor: 3
   }];
 
   kafka_client.createTopics(topicsToCreate, (error, result) => {
@@ -48,7 +48,6 @@ const uploads = io.of('/uploads')
 uploads.on('connect', (socket) => {
     socket.emit('connected-uploads', `You are connected to uploads socket namespace`)
     let { file_name, force } = socket.handshake.query
-    console.log("TCL: file_name", file_name)
 
     socket.on('ready', () => {
         //download upload data
@@ -56,6 +55,10 @@ uploads.on('connect', (socket) => {
     })
 
 })
+
+
+
+
 
 
 global.texts_namespace = io.of('/texts')
