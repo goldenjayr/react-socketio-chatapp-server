@@ -22,6 +22,57 @@ const kafkaProducerTexts = (kafka_client, topic, message, user) => {
 
 }
 
+
+const kafkaFilesProducer = (kafka_client, topic, stream, {file}) => {
+    console.log(`Creating Producer..... with topic ${topic}`)
+    const producerStream = new kafka.ProducerStream(kafka_client)
+    const streamArray = []
+    let order = 0
+
+    const streamToTopic = new Transform({
+        objectMode: true,
+        decodeStrings: true,
+        transform (chunk, encoding, callback) {
+          order = order + 1
+          callback(null, {
+            key: `${order}.${file.name}.${file.size}`,
+            topic: 'images',
+            messages: chunk
+          });
+        }
+    });
+
+
+    stream.pipe(streamToTopic).on('data', (chunk) => {
+    console.log("TCL: kafkaFilesProducer -> chunk", chunk)
+        streamArray.unshift(chunk)
+    })
+
+    stream.on('end', () => {
+        streamArray[0].key = streamArray[0].key + '.last'
+        console.log("TCL: kafkaFilesProducer -> streamArray[0].key ", streamArray[0].key )
+        // created new transform because producerStream cannot push from array
+        const newTransformStream = new Transform({
+            objectMode: true,
+            decodeStrings: true,
+            transform (chunk, encoding, callback) {
+              callback(null, {
+                messages: chunk
+              });
+            }
+        });
+        streamArray.forEach((arr) => {
+            newTransformStream.push(arr)
+        })
+        newTransformStream.pipe(producerStream)
+    })
+
+
+
+    console.log(`Production completed`)
+}
+
 module.exports = {
-    kafkaProducerTexts
+    kafkaProducerTexts,
+    kafkaFilesProducer
 }

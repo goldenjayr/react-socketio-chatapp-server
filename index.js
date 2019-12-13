@@ -14,17 +14,33 @@ const uuiv4 = require('uuid/v4')
 const router = require('./router')
 
 const { kafka_server, kafka_topic } = require('./kafka_config')
-
+const util = require('util')
 const PORT = process.env.PORT || 4000
 
 const { addUser, removeUser, getUser, getUsersInRoom, addToChatHistory, getChatHistory } = require('./users')
 const { downloadUploadData, createProducerStream } = require('./utils')
-const { kafkaProducerTexts } = require('./kafkaProducer')
-const { kafkaConsumerGroupTexts, kafkaConsumerTexts } = require('./kafkaConsumer')
+const { kafkaProducerTexts, kafkaFilesProducer } = require('./kafkaProducer')
+const { kafkaConsumerGroupTexts, kafkaConsumerTexts, kafkaFileConsumer } = require('./kafkaConsumer')
 
 global.uploadDirectory = path.resolve(__dirname, 'uploads')
 
 
+const kafka_client_options = {
+    kafkaHost: kafka_server
+}
+
+const kafka_client = new kafka.KafkaClient( kafka_client_options )
+
+var topicsToCreate = [{
+    topic: 'images',
+    partitions: 3,
+    replicationFactor: 2
+  }];
+
+  kafka_client.createTopics(topicsToCreate, (error, result) => {
+    if (error) console.log(error)
+    console.log(`Result of creating topic is ${util.inspect(result, false, null, true)}`)
+  });
 
 
 // uploads namespace for retrieving uploads
@@ -34,60 +50,10 @@ uploads.on('connect', (socket) => {
     let { file_name, force } = socket.handshake.query
     console.log("TCL: file_name", file_name)
 
-
-    // kafka integration
-    // const topic = `${file_name}_${uuiv4()}`
-    const topic = 'pictures'
-    const filePath = path.resolve(uploadDirectory, file_name)
-    const stat = fs.statSync( filePath )
-    try {
-        console.log('Stream request received')
-        const kafka_client_options = {
-            kafkaHost: kafka_server
-        }
-
-        // kafka Stream
-
-        const kafka_client = new kafka.KafkaClient( kafka_client_options )
-
-        kafka_client.createTopics([{
-            topic,
-            partitions: 3,
-            replicationFactor: 2
-        }], ( err ) => {
-            if ( err ) {
-                throw err
-            } else {
-                console.log (`Created ${topic}`)
-                const readableStream = fs.createReadStream(filePath)
-                const producerStream = createProducerStream(kafka_client_options, topic)
-
-                readableStream.pipe( producerStream )
-
-                let transferred = 0
-                readableStream.on('data', (data) => {
-                    transferred = transferred + data.length
-                    console.log(`Sent ${file_name}  ( ${Math.floor(( transferred /stat.size ) * 100  ) }% ) [ ${transferred} / ${stat.size } ]`)
-                })
-
-                socket.emit('kafa-response', {topic, stat})
-            }
-        })
-
-    } catch (err) {
-        console.error(err)
-    }
-
-
     socket.on('ready', () => {
         //download upload data
         downloadUploadData(socket, file_name)
     })
-
-
-    // socket.on('get-uploads', (file_name) => {
-    //     downloadUploadData(socket, file_name)
-    // })
 
 })
 
@@ -102,63 +68,108 @@ texts_namespace.on('connect', socket => {
 
 
         socket.emit('admin-message', {user: {name: 'admin'}, text: `${user.name}, Welcome to the room ${user.room}.`})
-        kafkaConsumerTexts(kafka_server, socket, room)
+       // kafkaConsumerTexts(kafka_server, socket, room)
         socket.broadcast.to(user.room).emit('admin-message', {user: {name: 'admin'}, text: `${user.name} has joined.`})
         socket.join(user.room)
         texts_namespace.to(user.room).emit('room-data', {room: user.room, users: getUsersInRoom(user.room)})
     })
 
 
-    socket.on('send-message', (message, callback) => {
+    ss(socket).on('send-data', (stream, data, callback) => {
+    console.log("TCL: message", data)
         const user = getUser(socket.id)
+
+
 
         //kafka integration
         const topic = 'texts'
+        const fileNameTopic = 'filenames'
         try {
             console.log(`Going to Kafka........`)
             console.log(`Kafka request received for topic -> ${topic}`)
-            const kafka_client_options = {
-                kafkaHost: kafka_server
-            }
-
-            const kafka_client = new kafka.KafkaClient( kafka_client_options )
-            kafkaConsumerGroupTexts(topic)
-            kafkaProducerTexts(kafka_client, topic, message, user)
-
-            // topicsToCreate = [
-                //     {
-                    //         topic,
-                    //         partitions: 3,
-                    //         key: 'theKey',
-                    //         replicationFactor: 2
-                    //     }
-                    // ]
-
-            // kafka_client.createTopics(topicsToCreate, ( err, result ) => {
-            //     if ( err ) {
-            //         throw err
-            //     } else {
-            //         console.log(`this is the result`)
-            //         console.log (`Created topic ${topic}`)
-            //     }
-            // })
-
-            // kafka_client.loadMetadataForTopics(["texts", "pictures", "ohyeah"], (err, resp) => {
-            //     console.log("TOPIC EXIST: ", JSON.stringify(resp).includes('error'))
-            //   });
 
 
+            // produce file name
+            // kafkaProducerTexts(kafka_client, fileNameTopic, data.file, user)
+
+            // pass to file producer and write
+            kafkaFilesProducer(kafka_client, topic, stream, data)
+
+            // consuming file names
+            // const {filename} = kafkaConsumerGroupTexts(fileNameTopic)
+            // console.log("TCL: filename", filename)
+
+            // consuming file
+        //     stream.on('end', () => {
+        //         console.log('Processing consumer....')
+        //         const filePath = path.join(process.cwd(), 'uploads/' + Date.now().toString() + 'test.jpg')
+        //         writeStream = fs.createWriteStream(filePath)
+        //         // in consumer decode strings to true
+        //         const messageTransform = new Transform({
+        //             objectMode: true,
+        //             decodeStrings: true,
+        //             transform (message, encoding, callback) {
+        //               callback(false, message.value);
+        //             }
+        //           });
+
+        //           const consumerOptions = {
+        //             groupId: 'ExampleTestGroup',
+        //             sessionTimeout: 15000,
+        //             protocol: ['roundrobin'],
+        //             fetchMaxBytes: 1024 * 1024,
+        //             fromOffset: 'latest',
+        //             encoding: 'buffer',
+        //             outOfRangeOffset: 'earliest'
+        //         }
+
+        //         const kafkaConsumerStream = new kafka.ConsumerGroupStream(consumerOptions, topic)
+
+        //         // writeStream.on('drain', () => {
+        //         //     console.log('Write stream completed')
+        //         //     kafkaConsumerStream.pause()
+        //         // })
+
+        //         kafkaConsumerStream.pipe(messageTransform).pipe(writeStream)
+
+        //     })
 
         } catch (err) {
             throw err
         }
 
 
+        // ===============================================================
 
-        addToChatHistory({
-            message,
-            user
-        })
+
+
+                    // topicsToCreate = [
+                        //     {
+                            //         topic,
+                            //         partitions: 3,
+                            //         key: 'theKey',
+                            //         replicationFactor: 2
+                            //     }
+                            // ]
+
+                    // kafka_client.createTopics(topicsToCreate, ( err, result ) => {
+                    //     if ( err ) {
+                    //         throw err
+                    //     } else {
+                    //         console.log(`this is the result`)
+                    //         console.log (`Created topic ${topic}`)
+                    //     }
+                    // })
+
+                    // kafka_client.loadMetadataForTopics(["texts", "pictures", "ohyeah"], (err, resp) => {
+                    //     console.log("TOPIC EXIST: ", JSON.stringify(resp).includes('error'))
+                    //   });
+
+
+        // addToChatHistory({
+        //     message,
+        //     user
+        // })
 
         callback()
     })

@@ -10,15 +10,21 @@ const kafkaConsumerGroupTexts = (topic) => {
             fromOffset: 'latest',
             outOfRangeOffset: 'earliest'
         }
-        let consumer = new kafka.ConsumerGroup(consumerOptions,topic);
 
+        consumer = new kafka.ConsumerGroup(consumerOptions,topic);
+        let filename
         consumer.on('message', (data) => {
-          console.log('kafka consumed ------> ', data.value);
-          console.log('Sending message to client subscribers')
+        console.log("TCL: kafkaConsumerGroupTexts -> data", data)
+          // console.log('Sending message to client subscribers')
           const { message, user } = JSON.parse(data.value)
-
-          texts_namespace.emit('admin-message', {user, text: message})
+          filename = message
+          consumer.close(true, () => {
+            console.log('Closing consumer')
+          })
+          // texts_namespace.emit('admin-message', {user, text: message})
         })
+
+        return {filename}
 
         consumer.on('error', function(err) {
           console.log('error', err);
@@ -77,7 +83,42 @@ const kafkaConsumerTexts = (kafka_server, socket, room) => {
       }
 }
 
+const kafkaFileConsumer = (stream, topic) => {
+  stream.on('end', () => {
+    console.log('Processing consumer....')
+    const filePath = path.join(process.cwd(), 'uploads/' + 'test.jpg')
+    writeStream = fs.createWriteStream(filePath)
+    // in consumer decode strings to true
+    const messageTransform = new Transform({
+        objectMode: true,
+        decodeStrings: true,
+        transform (message, encoding, callback) {
+          callback(false, {
+                key: Number(message.key.toString()),
+                messages: message.value
+            }
+          );
+        }
+      });
+
+      const consumerOptions = {
+        groupId: 'ExampleTestGroup',
+        sessionTimeout: 15000,
+        protocol: ['roundrobin'],
+        fetchMaxBytes: 1024 * 1024,
+        fromOffset: 'latest',
+        encoding: 'buffer',
+        outOfRangeOffset: 'earliest'
+    }
+    const kafkaConsumerStream = new kafka.ConsumerGroupStream(consumerOptions, topic)
+    kafkaConsumerStream.pipe(messageTransform).on('data', (chunk) => {
+        writeStream.write(chunk.messages)
+    })
+})
+}
+
 module.exports = {
     kafkaConsumerGroupTexts,
-    kafkaConsumerTexts
+    kafkaConsumerTexts,
+    kafkaFileConsumer
 }
