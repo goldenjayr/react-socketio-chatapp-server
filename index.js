@@ -1,184 +1,229 @@
-const app = require('express')()
-const server = require('http').Server(app)
+const app = require("express")();
+const server = require("http").Server(app);
 
-global.path = require('path')
-global.fs = require('fs')
-global.io = require('socket.io')(server)
-global.ss = require('socket.io-stream')
-global.kafka = require('kafka-node')
+global.path = require("path");
+global.fs = require("fs");
+global.io = require("socket.io")(server);
+global.ss = require("socket.io-stream");
+global.kafka = require("kafka-node");
 
-global.Transform = require('stream').Transform
-global.Duplex = require('stream').Duplex
+global.Transform = require("stream").Transform;
+global.Duplex = require("stream").Duplex;
+global.Readable = require("stream").Readable;
 
-const uuiv4 = require('uuid/v4')
-const router = require('./router')
+const uuiv4 = require("uuid/v4");
+const router = require("./router");
 
-const { kafka_server, kafka_topic } = require('./kafka_config')
-const util = require('util')
-const PORT = process.env.PORT || 4000
+const { kafka_server, kafka_topic } = require("./kafka_config");
+const util = require("util");
+const PORT = process.env.PORT || 4000;
 
-const { addUser, removeUser, getUser, getUsersInRoom, addToChatHistory, getChatHistory } = require('./users')
-const { downloadUploadData, createProducerStream } = require('./utils')
-const { kafkaProducerTexts, kafkaFilesProducer } = require('./kafkaProducer')
-const { kafkaConsumerGroupTexts, kafkaConsumerTexts, kafkaFileConsumer } = require('./kafkaConsumer')
+const {
+  addUser,
+  removeUser,
+  getUser,
+  getUsersInRoom,
+  addToChatHistory,
+  getChatHistory
+} = require("./users");
+const {
+  downloadFromRepo,
+  requestFiles,
+  listenForData,
+  createProducerStream
+} = require("./utils");
+const { kafkaProducerTexts, kafkaFilesProducer } = require("./kafkaProducer");
+const {
+  kafkaConsumerGroupTexts,
+  kafkaConsumerTexts,
+  kafkaFileConsumer
+} = require("./kafkaConsumer");
 
-global.uploadDirectory = path.resolve(process.cwd(), '../file-repository')
-
+global.uploadDirectory = path.resolve(process.cwd(), "../file-repository");
 
 const kafka_client_options = {
-    kafkaHost: kafka_server
-}
+  kafkaHost: kafka_server
+};
 
-const kafka_client = new kafka.KafkaClient( kafka_client_options )
+const kafka_client = new kafka.KafkaClient(kafka_client_options);
 
-var topicsToCreate = [{
-    topic: 'images',
+var topicsToCreate = [
+  {
+    topic: "images",
+    partitions: 10,
+    replicationFactor: 3
+  },
+  {
+    topic: "request-files",
     partitions: 3,
     replicationFactor: 3
-  }];
+  },
+  {
+    topic: "image-request",
+    partitions: 5,
+    replicationFactor: 3
+  }
+];
 
-  kafka_client.createTopics(topicsToCreate, (error, result) => {
-    if (error) console.log(error)
-    console.log(`Result of creating topic is ${util.inspect(result, false, null, true)}`)
-  });
+// create kafka topics
+kafka_client.createTopics(topicsToCreate, (error, result) => {
+  if (error) console.log(error);
+  console.log(
+    `Result of creating topic is ${util.inspect(result, false, null, true)}`
+  );
+});
 
+// create Producers
+const requestFilesProducer = new kafka.Producer(kafka_client);
+
+// create consumer Streams
+const consumerOptions = {
+  groupId: "ExampleTestGroup",
+  sessionTimeout: 15000,
+  protocol: ["roundrobin"],
+  fetchMaxBytes: 1024*1024*10,
+  fromOffset: "latest",
+  encoding: "buffer",
+  keyEncoding: "utf8",
+  outOfRangeOffset: "earliest"
+};
+
+const requestFilesConsumer = new kafka.ConsumerGroupStream(
+  consumerOptions,
+  "image-request"
+);
 
 // uploads namespace for retrieving uploads
-const uploads = io.of('/uploads')
-uploads.on('connect', (socket) => {
-    socket.emit('connected-uploads', `You are connected to uploads socket namespace`)
-    let { file_name, force } = socket.handshake.query
+const uploads = io.of("/uploads");
+uploads.on("connect", socket => {
+  socket.emit(
+    "connected-uploads",
+    `You are connected to uploads socket namespace`
+  );
+  let { file_name, force } = socket.handshake.query;
 
-    socket.on('ready', () => {
-        //download upload data
-        downloadUploadData(socket, file_name)
-    })
+  socket.on("ready", () => {
+    //download upload data
+    // downloadFromRepo(socket, file_name)
+    requestFiles(requestFilesProducer);
+    listenForData(requestFilesConsumer, socket);
+  });
+});
 
-})
+global.texts_namespace = io.of("/texts");
+texts_namespace.on("connect", socket => {
+  socket.emit("connected-texts", `You are connected to text socket namespace`);
 
+  socket.on("user-join", ({ name, room }) => {
+    const { error, user } = addUser({ id: socket.id, name, room });
+    if (error) return callback(error);
 
+    socket.emit("admin-message", {
+      user: { name: "admin" },
+      text: `${user.name}, Welcome to the room ${user.room}.`
+    });
+    // kafkaConsumerTexts(kafka_server, socket, room)
+    socket.broadcast.to(user.room).emit("admin-message", {
+      user: { name: "admin" },
+      text: `${user.name} has joined.`
+    });
+    socket.join(user.room);
+    texts_namespace
+      .to(user.room)
+      .emit("room-data", { room: user.room, users: getUsersInRoom(user.room) });
+  });
 
+  ss(socket).on("send-data", (stream, data, callback) => {
+    console.log("TCL: message", data);
+    const user = getUser(socket.id);
 
+    //kafka integration
+    const topic = "texts";
+    const fileNameTopic = "filenames";
+    try {
+      console.log(`Going to Kafka........`);
+      console.log(`Kafka request received for topic -> ${topic}`);
 
+      // produce file name
+      // kafkaProducerTexts(kafka_client, fileNameTopic, data.file, user)
 
-global.texts_namespace = io.of('/texts')
-texts_namespace.on('connect', socket => {
-    socket.emit('connected-texts', `You are connected to text socket namespace`)
+      // pass to file producer and write
+      kafkaFilesProducer(kafka_client, topic, stream, data);
 
-    socket.on('user-join', ({name, room}) => {
-        const { error, user } = addUser({id: socket.id, name, room})
-        if (error) return callback(error)
+      // consuming file names
+      // const {filename} = kafkaConsumerGroupTexts(fileNameTopic)
+      // console.log("TCL: filename", filename)
 
+      // consuming file
+      //     stream.on('end', () => {
+      //         console.log('Processing consumer....')
+      //         const filePath = path.join(process.cwd(), 'uploads/' + Date.now().toString() + 'test.jpg')
+      //         writeStream = fs.createWriteStream(filePath)
+      //         // in consumer decode strings to true
+      //         const messageTransform = new Transform({
+      //             objectMode: true,
+      //             decodeStrings: true,
+      //             transform (message, encoding, callback) {
+      //               callback(false, message.value);
+      //             }
+      //           });
 
-        socket.emit('admin-message', {user: {name: 'admin'}, text: `${user.name}, Welcome to the room ${user.room}.`})
-       // kafkaConsumerTexts(kafka_server, socket, room)
-        socket.broadcast.to(user.room).emit('admin-message', {user: {name: 'admin'}, text: `${user.name} has joined.`})
-        socket.join(user.room)
-        texts_namespace.to(user.room).emit('room-data', {room: user.room, users: getUsersInRoom(user.room)})
-    })
+      //           const consumerOptions = {
+      //             groupId: 'ExampleTestGroup',
+      //             sessionTimeout: 15000,
+      //             protocol: ['roundrobin'],
+      //             fetchMaxBytes: 1024 * 1024,
+      //             fromOffset: 'latest',
+      //             encoding: 'buffer',
+      //             outOfRangeOffset: 'earliest'
+      //         }
 
+      //         const kafkaConsumerStream = new kafka.ConsumerGroupStream(consumerOptions, topic)
 
-    ss(socket).on('send-data', (stream, data, callback) => {
-    console.log("TCL: message", data)
-        const user = getUser(socket.id)
+      //         // writeStream.on('drain', () => {
+      //         //     console.log('Write stream completed')
+      //         //     kafkaConsumerStream.pause()
+      //         // })
 
+      //         kafkaConsumerStream.pipe(messageTransform).pipe(writeStream)
 
+      //     })
+    } catch (err) {
+      throw err;
+    }
 
-        //kafka integration
-        const topic = 'texts'
-        const fileNameTopic = 'filenames'
-        try {
-            console.log(`Going to Kafka........`)
-            console.log(`Kafka request received for topic -> ${topic}`)
+    // ===============================================================
 
+    // topicsToCreate = [
+    //     {
+    //         topic,
+    //         partitions: 3,
+    //         key: 'theKey',
+    //         replicationFactor: 2
+    //     }
+    // ]
 
-            // produce file name
-            // kafkaProducerTexts(kafka_client, fileNameTopic, data.file, user)
+    // kafka_client.createTopics(topicsToCreate, ( err, result ) => {
+    //     if ( err ) {
+    //         throw err
+    //     } else {
+    //         console.log(`this is the result`)
+    //         console.log (`Created topic ${topic}`)
+    //     }
+    // })
 
-            // pass to file producer and write
-            kafkaFilesProducer(kafka_client, topic, stream, data)
+    // kafka_client.loadMetadataForTopics(["texts", "pictures", "ohyeah"], (err, resp) => {
+    //     console.log("TOPIC EXIST: ", JSON.stringify(resp).includes('error'))
+    //   });
 
-            // consuming file names
-            // const {filename} = kafkaConsumerGroupTexts(fileNameTopic)
-            // console.log("TCL: filename", filename)
+    // addToChatHistory({
+    //     message,
+    //     user
+    // })
 
-            // consuming file
-        //     stream.on('end', () => {
-        //         console.log('Processing consumer....')
-        //         const filePath = path.join(process.cwd(), 'uploads/' + Date.now().toString() + 'test.jpg')
-        //         writeStream = fs.createWriteStream(filePath)
-        //         // in consumer decode strings to true
-        //         const messageTransform = new Transform({
-        //             objectMode: true,
-        //             decodeStrings: true,
-        //             transform (message, encoding, callback) {
-        //               callback(false, message.value);
-        //             }
-        //           });
-
-        //           const consumerOptions = {
-        //             groupId: 'ExampleTestGroup',
-        //             sessionTimeout: 15000,
-        //             protocol: ['roundrobin'],
-        //             fetchMaxBytes: 1024 * 1024,
-        //             fromOffset: 'latest',
-        //             encoding: 'buffer',
-        //             outOfRangeOffset: 'earliest'
-        //         }
-
-        //         const kafkaConsumerStream = new kafka.ConsumerGroupStream(consumerOptions, topic)
-
-        //         // writeStream.on('drain', () => {
-        //         //     console.log('Write stream completed')
-        //         //     kafkaConsumerStream.pause()
-        //         // })
-
-        //         kafkaConsumerStream.pipe(messageTransform).pipe(writeStream)
-
-        //     })
-
-        } catch (err) {
-            throw err
-        }
-
-
-        // ===============================================================
-
-
-
-                    // topicsToCreate = [
-                        //     {
-                            //         topic,
-                            //         partitions: 3,
-                            //         key: 'theKey',
-                            //         replicationFactor: 2
-                            //     }
-                            // ]
-
-                    // kafka_client.createTopics(topicsToCreate, ( err, result ) => {
-                    //     if ( err ) {
-                    //         throw err
-                    //     } else {
-                    //         console.log(`this is the result`)
-                    //         console.log (`Created topic ${topic}`)
-                    //     }
-                    // })
-
-                    // kafka_client.loadMetadataForTopics(["texts", "pictures", "ohyeah"], (err, resp) => {
-                    //     console.log("TOPIC EXIST: ", JSON.stringify(resp).includes('error'))
-                    //   });
-
-
-        // addToChatHistory({
-        //     message,
-        //     user
-        // })
-
-        callback()
-    })
-})
-
-
+    callback();
+  });
+});
 
 // io.on('connect', (socket) => {
 //     console.log('new Connection')
@@ -187,7 +232,6 @@ texts_namespace.on('connect', socket => {
 //         if (error) return callback(error)
 
 //         const chatHistory = getChatHistory()
-
 
 //         socket.emit('admin-message', {user: 'admin', text: `${user.name}, Welcome to the room ${user.room}.`})
 //         socket.broadcast.to(user.room).emit('admin-message', {user: 'admin', text: `${user.name} has joined.`})
@@ -228,7 +272,6 @@ texts_namespace.on('connect', socket => {
 //         callback()
 //     })
 
-
 //     socket.on('disconnect', () => {
 //         console.log('Disconnection')
 //         // const user = removeUser(socket.id)
@@ -239,6 +282,6 @@ texts_namespace.on('connect', socket => {
 //     })
 // } )
 
-app.use(router)
+app.use(router);
 
-server.listen(PORT, () => console.log(`Server listening on port ${PORT}`))
+server.listen(PORT, () => console.log(`Server listening on port ${PORT}`));

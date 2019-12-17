@@ -6,7 +6,7 @@ const kafkaConsumerGroupTexts = (topic) => {
             groupId: 'ExampleTestGroup',
             sessionTimeout: 15000,
             protocol: ['roundrobin'],
-            fetchMaxBytes: 1024 * 1024,
+            fetchMaxBytes: 1024*1024*10,
             fromOffset: 'latest',
             outOfRangeOffset: 'earliest'
         }
@@ -47,7 +47,7 @@ const kafkaConsumerTexts = (kafka_server, socket, room) => {
         // This is the minimum number of bytes of messages that must be available to give a response, default 1 byte
         fetchMinBytes: 1,
         // The maximum bytes to include in the message set for this partition. This helps bound the size of the response.
-        fetchMaxBytes: 1024 * 1024,
+        fetchMaxBytes: 1024*1024*10,
         // If set true, consumer will fetch message from the given offset in the payloads
         fromOffset: true,
     }
@@ -105,7 +105,7 @@ const kafkaFileConsumer = (stream, topic) => {
         groupId: 'ExampleTestGroup',
         sessionTimeout: 15000,
         protocol: ['roundrobin'],
-        fetchMaxBytes: 1024 * 1024,
+        fetchMaxBytes: 1024*1024*10,
         fromOffset: 'latest',
         encoding: 'buffer',
         outOfRangeOffset: 'earliest'
